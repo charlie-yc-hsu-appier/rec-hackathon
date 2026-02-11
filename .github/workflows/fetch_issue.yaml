@@ -1,0 +1,34 @@
+name: Fetch issues
+
+on:
+  workflow_dispatch:
+  issues:
+    types:
+      - opened
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch open issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            core.info(`Fetched ${issues.length} open issues.`);
+            for (const issue of issues) {
+              core.info(`#${issue.number} ${issue.title}`);
+            }
