@@ -1,6 +1,6 @@
 # Flow: 1) Predefined prompt  2) GitHub issue defines fields to update
 #        3) run-gemini-cli (Gemini official CLI) runs with prompt + issue-derived vendor JSON
-#        4) Commit/push changes  5) Create PR
+#        4) create-pull-request (branch, commit, push, open PR)
 # Prompt: .github/prompts/vendor-onboard-prompt.md  (placeholder {{VENDOR_JSON}})
 name: Vendor issue to PR
 
@@ -58,10 +58,14 @@ jobs:
             });
             const title = (issue.title || '').replace(/"/g, "'").replace(/`/g, '\\`');
             const body = (issue.body || '').replace(/"/g, "'").replace(/`/g, '\\`');
+            const kebabCase = (str) => String(str).toLowerCase().trim()
+              .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/^-+|-+$/g, '');
+            const branchName = 'feature/vendor-' + (kebabCase(issue.title) || 'vendor-onboard');
             core.setOutput('issue_number', String(issue.number));
             core.setOutput('title', title);
             core.setOutput('body', body);
-            return { title, body, issue_number: issue.number };
+            core.setOutput('branch_name', branchName);
+            return { title, body, issue_number: issue.number, branch_name: branchName };
 
       - name: Parse issue body to vendor JSON
         id: parse
@@ -135,43 +139,6 @@ jobs:
             if (!isNoResponse(content_type)) vendor.content_type = content_type;
             core.setOutput('vendor_json', JSON.stringify(vendor, null, 2));
 
-      - name: Create branch
-        id: create_branch
-        env:
-          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'main' }}
-          ISSUE_TITLE: ${{ steps.get_issue.outputs.title }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const kebabCase = (str) => String(str).toLowerCase().trim()
-              .replace(/[^\\w\\s-]/g, '').replace(/\\s+/g, '-').replace(/^-+|-+$/g, '');
-            const baseBranch = process.env.BASE_BRANCH || 'main';
-            const base = await github.rest.repos.getBranch({
-              owner: context.repo.owner, repo: context.repo.repo, branch: baseBranch
-            }).catch(() => null);
-            const sha = base ? base.data.commit.sha : context.sha;
-            const title = process.env.ISSUE_TITLE || 'vendor-onboard';
-            const branchName = 'feature/vendor-' + (kebabCase(title) || 'vendor-onboard');
-            const refName = 'refs/heads/' + branchName;
-            const refShortName = 'heads/' + branchName;
-            const existing = await github.rest.git.getRef({ owner: context.repo.owner, repo: context.repo.repo, ref: refShortName }).catch(() => null);
-            if (existing) {
-              try {
-                await github.rest.repos.getBranch({ owner: context.repo.owner, repo: context.repo.repo, branch: branchName });
-                core.setOutput('ref', existing.data.ref);
-                return;
-              } catch (_) {
-                await github.rest.git.deleteRef({ owner: context.repo.owner, repo: context.repo.repo, ref: refShortName });
-              }
-            }
-            await github.rest.git.createRef({ owner: context.repo.owner, repo: context.repo.repo, ref: refName, sha });
-            core.setOutput('ref', refName);
-
-      - name: Checkout branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.create_branch.outputs.ref }}
-
       - name: Build prompt (predefined prompt + issue data)
         id: create_prompt
         env:
@@ -209,41 +176,16 @@ jobs:
           prompt: ${{ steps.prompt_output.outputs.prompt }}
           upload_artifacts: 'true'
 
-      - name: Commit and push changes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git status
-          if git diff --quiet && git diff --staged --quiet; then
-            echo "No changes to commit."
-          else
-            git add -A
-            git commit -m "chore(vendors): add or update vendor from issue"
-            git push origin HEAD
-          fi
-
       - name: Create Pull Request
-        uses: actions/github-script@v7
-        env:
-          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'main' }}
+        id: create_pr
+        uses: peter-evans/create-pull-request@v6
         with:
-          script: |
-            const branchRef = '${{ steps.create_branch.outputs.ref }}'.replace('refs/heads/', '');
-            const baseBranch = process.env.BASE_BRANCH || 'main';
-            const issueNumber = '${{ steps.get_issue.outputs.issue_number }}';
-            const title = '${{ steps.get_issue.outputs.title }}';
-            const { repo, owner } = context.repo;
-            const pulls = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-            const existing = pulls.data.find(pr => pr.head.ref === branchRef);
-            if (existing) {
-              console.log('PR already exists: ' + existing.html_url);
-              return;
-            }
-            const pr = await github.rest.pulls.create({
-              owner, repo,
-              title: '[Vendor] ' + title,
-              head: branchRef,
-              base: baseBranch,
-              body: 'Auto-generated by Vendor issue to PR workflow (run-gemini-cli).\\n\\nFixes #' + issueNumber
-            });
-            console.log('Created PR #' + pr.data.number + ': ' + pr.data.html_url);
+          token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+          commit-message: "chore(vendors): add or update vendor from issue"
+          branch: ${{ steps.get_issue.outputs.branch_name }}
+          base: ${{ github.event.inputs.base_branch || 'main' }}
+          title: "[Vendor] ${{ steps.get_issue.outputs.title }}"
+          body: |
+            Auto-generated by Vendor issue to PR workflow (run-gemini-cli).
+
+            Fixes #${{ steps.get_issue.outputs.issue_number }}
