@@ -62,7 +62,7 @@ body:
     attributes:
       label: Request queries
       description: "One key-value pair per line, e.g. key: value or key=value. Use placeholders like {subid}, {user_id_lower}."
-      placeholder: "app_code: \"{subid}\"\ndevice_id: \"{user_id_lower}\""
+      placeholder: "app_code: {subid}\ndevice_id: {user_id_lower}"
     validations:
       required: false
 
@@ -80,7 +80,7 @@ body:
     attributes:
       label: Tracking queries
       description: 'One key-value pair per line, e.g. subparam: "{click_id_base64}"'
-      placeholder: 'subparam: "{click_id_base64}"'
+      placeholder: 'subparam: {click_id_base64}'
     validations:
       required: false
 
