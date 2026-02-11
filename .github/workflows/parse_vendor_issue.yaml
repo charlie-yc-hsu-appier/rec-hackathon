@@ -83,7 +83,11 @@ jobs:
               }
               return sections;
             };
-            const isNoResponse = (v) => !v || (typeof v === 'string' && v.trim().toLowerCase() === 'no response');
+            const isNoResponse = (v) => {
+              if (!v || typeof v !== 'string') return true;
+              const s = v.trim().replace(/^[_*]+|[_*]+$/g, '').trim().toLowerCase();
+              return s === '' || s === 'no response';
+            };
             const parseQueryLines = (str) => {
               if (!str || typeof str !== 'string' || isNoResponse(str)) return [];
               return str.split(/\r?\n/)
