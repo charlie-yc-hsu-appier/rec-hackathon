@@ -30,5 +30,7 @@ jobs:
 
             core.info(`Fetched ${issues.length} open issues.`);
             for (const issue of issues) {
+              const description = issue.body || "(no description)";
               core.info(`#${issue.number} ${issue.title}`);
+              core.info(description);
             }
