@@ -1,0 +1,246 @@
+# Flow: 1) Predefined prompt  2) GitHub issue defines fields to update
+#        3) run-gemini-cli (Gemini official CLI) runs with prompt + issue-derived vendor JSON
+#        4) Commit/push changes  5) Create PR
+# Prompt: .github/prompts/vendor-onboard-prompt.md  (placeholder {{VENDOR_JSON}})
+name: Vendor issue to PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number (required for manual run)"
+        required: true
+        type: number
+      base_branch:
+        description: "Base branch for the PR"
+        required: false
+        type: string
+        default: "main"
+      timeout_minutes:
+        description: "Job timeout (minutes)"
+        required: false
+        type: number
+        default: 15
+  issues:
+    types:
+      - opened
+      - edited
+
+permissions:
+  issues: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  vendor-to-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event.inputs.timeout_minutes || 15 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+
+      - name: Resolve issue number and get issue
+        id: get_issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.payload.inputs?.issue_number ?? context.payload.issue?.number;
+            if (!issueNumber) {
+              core.setFailed('Missing issue number (provide it for workflow_dispatch or trigger from an issue).');
+              return;
+            }
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(issueNumber),
+            });
+            const title = (issue.title || '').replace(/"/g, "'").replace(/`/g, '\\`');
+            const body = (issue.body || '').replace(/"/g, "'").replace(/`/g, '\\`');
+            core.setOutput('issue_number', String(issue.number));
+            core.setOutput('title', title);
+            core.setOutput('body', body);
+            return { title, body, issue_number: issue.number };
+
+      - name: Parse issue body to vendor JSON
+        id: parse
+        env:
+          ISSUE_BODY: ${{ steps.get_issue.outputs.body }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const bodyContent = process.env.ISSUE_BODY || '';
+            const parseBody = (text) => {
+              const sections = {};
+              const lines = (text || '').split(/\r?\n/);
+              let currentLabel = null;
+              let currentLines = [];
+              for (const line of lines) {
+                const match = line.match(/^###\s+(.+)$/);
+                if (match) {
+                  if (currentLabel !== null) sections[currentLabel] = currentLines.join('\n').trim();
+                  currentLabel = match[1].trim();
+                  currentLines = [];
+                } else if (currentLabel !== null) currentLines.push(line);
+              }
+              if (currentLabel !== null) sections[currentLabel] = currentLines.join('\n').trim();
+              return sections;
+            };
+            const parseQueryLines = (str) => {
+              if (!str || typeof str !== 'string') return [];
+              return str.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+                .map(line => {
+                  const colonIdx = line.indexOf(':');
+                  const eqIdx = line.indexOf('=');
+                  let key, value;
+                  if (colonIdx >= 0 && (eqIdx < 0 || colonIdx <= eqIdx)) {
+                    key = line.slice(0, colonIdx).trim();
+                    value = line.slice(colonIdx + 1).trim();
+                  } else if (eqIdx >= 0) {
+                    key = line.slice(0, eqIdx).trim();
+                    value = line.slice(eqIdx + 1).trim();
+                  } else return null;
+                  return key ? { key, value: value || '' } : null;
+                }).filter(Boolean);
+            };
+            const raw = parseBody(bodyContent);
+            const get = (label) => (raw[label] || '').trim();
+            const name = get('Vendor name');
+            const http_method = (get('HTTP method') || 'GET').toUpperCase();
+            if (http_method !== 'GET' && http_method !== 'POST') {
+              core.setFailed(`Invalid http_method: ${http_method}. Must be GET or POST.`);
+              return;
+            }
+            const with_proxy = get('With proxy').toLowerCase() !== 'false';
+            const request_url = get('Request URL');
+            const tracking_url = get('Tracking URL');
+            const request_queries = parseQueryLines(get('Request queries'));
+            const tracking_queries = parseQueryLines(get('Tracking queries'));
+            const user_agent = get('User-Agent');
+            const content_type = get('Content-Type');
+            if (!name || !request_url || !tracking_url) {
+              core.setFailed('Missing required fields: Vendor name, Request URL, or Tracking URL.');
+              return;
+            }
+            const vendor = {
+              name, with_proxy, http_method,
+              request: { url: request_url, queries: request_queries },
+              tracking: { url: tracking_url, queries: tracking_queries },
+            };
+            if (user_agent) vendor.user_agent = user_agent;
+            if (content_type) vendor.content_type = content_type;
+            core.setOutput('vendor_json', JSON.stringify(vendor, null, 2));
+
+      - name: Create branch
+        id: create_branch
+        env:
+          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'main' }}
+          ISSUE_TITLE: ${{ steps.get_issue.outputs.title }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const kebabCase = (str) => String(str).toLowerCase().trim()
+              .replace(/[^\\w\\s-]/g, '').replace(/\\s+/g, '-').replace(/^-+|-+$/g, '');
+            const baseBranch = process.env.BASE_BRANCH || 'main';
+            const base = await github.rest.repos.getBranch({
+              owner: context.repo.owner, repo: context.repo.repo, branch: baseBranch
+            }).catch(() => null);
+            const sha = base ? base.data.commit.sha : context.sha;
+            const title = process.env.ISSUE_TITLE || 'vendor-onboard';
+            const branchName = 'feature/vendor-' + (kebabCase(title) || 'vendor-onboard');
+            const refName = 'refs/heads/' + branchName;
+            const refShortName = 'heads/' + branchName;
+            const existing = await github.rest.git.getRef({ owner: context.repo.owner, repo: context.repo.repo, ref: refShortName }).catch(() => null);
+            if (existing) {
+              try {
+                await github.rest.repos.getBranch({ owner: context.repo.owner, repo: context.repo.repo, branch: branchName });
+                core.setOutput('ref', existing.data.ref);
+                return;
+              } catch (_) {
+                await github.rest.git.deleteRef({ owner: context.repo.owner, repo: context.repo.repo, ref: refShortName });
+              }
+            }
+            await github.rest.git.createRef({ owner: context.repo.owner, repo: context.repo.repo, ref: refName, sha });
+            core.setOutput('ref', refName);
+
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.create_branch.outputs.ref }}
+
+      - name: Build prompt (predefined prompt + issue data)
+        id: create_prompt
+        env:
+          VENDOR_JSON: ${{ steps.parse.outputs.vendor_json }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const promptPath = path.join(process.env.GITHUB_WORKSPACE || '.', '.github/prompts/vendor-onboard-prompt.md');
+            const outPath = path.join(process.env.GITHUB_WORKSPACE || '.', '.vendor-prompt.txt');
+            if (!fs.existsSync(promptPath)) {
+              core.setFailed('Predefined prompt not found: .github/prompts/vendor-onboard-prompt.md');
+              return;
+            }
+            const template = fs.readFileSync(promptPath, 'utf8');
+            const vendorJson = process.env.VENDOR_JSON || '{}';
+            const prompt = template.replace(/\{\{VENDOR_JSON\}\}/g, vendorJson);
+            fs.writeFileSync(outPath, prompt, 'utf8');
+            core.setOutput('prompt', prompt);
+
+      - name: Set prompt output for run-gemini-cli
+        id: prompt_output
+        run: |
+          echo "prompt<<EOF" >> "$GITHUB_OUTPUT"
+          cat .vendor-prompt.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Run Gemini CLI
+        id: run_gemini
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.GEMINI_MODEL || 'gemini-2.0-flash' }}
+          prompt: ${{ steps.prompt_output.outputs.prompt }}
+          upload_artifacts: 'true'
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git status
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git add -A
+            git commit -m "chore(vendors): add or update vendor from issue"
+            git push origin HEAD
+          fi
+
+      - name: Create Pull Request
+        uses: actions/github-script@v7
+        env:
+          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'main' }}
+        with:
+          script: |
+            const branchRef = '${{ steps.create_branch.outputs.ref }}'.replace('refs/heads/', '');
+            const baseBranch = process.env.BASE_BRANCH || 'main';
+            const issueNumber = '${{ steps.get_issue.outputs.issue_number }}';
+            const title = '${{ steps.get_issue.outputs.title }}';
+            const { repo, owner } = context.repo;
+            const pulls = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+            const existing = pulls.data.find(pr => pr.head.ref === branchRef);
+            if (existing) {
+              console.log('PR already exists: ' + existing.html_url);
+              return;
+            }
+            const pr = await github.rest.pulls.create({
+              owner, repo,
+              title: '[Vendor] ' + title,
+              head: branchRef,
+              base: baseBranch,
+              body: 'Auto-generated by Vendor issue to PR workflow (run-gemini-cli).\\n\\nFixes #' + issueNumber
+            });
+            console.log('Created PR #' + pr.data.number + ': ' + pr.data.html_url);

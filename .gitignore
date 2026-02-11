@@ -1,0 +1,5 @@
+# Gemini CLI (run-gemini-cli)
+.gemini/
+
+# Workflow temp
+.vendor-prompt.txt
