@@ -1,0 +1,4 @@
+YOLO mode is enabled. All tool calls will be automatically approved.
+YOLO mode is enabled. All tool calls will be automatically approved.
+Hook registry initialized with 0 hook entries
+Error executing tool replace: params must have required property 'instruction'
