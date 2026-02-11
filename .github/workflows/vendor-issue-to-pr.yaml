@@ -171,6 +171,12 @@ jobs:
           cat .vendor-prompt.txt >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Upload prompt to artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor-prompt
+          path: .vendor-prompt.txt
+
       - name: Run Gemini CLI
         id: run_gemini
         uses: google-github-actions/run-gemini-cli@v0
