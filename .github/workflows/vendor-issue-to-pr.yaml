@@ -87,9 +87,10 @@ jobs:
               if (currentLabel !== null) sections[currentLabel] = currentLines.join('\n').trim();
               return sections;
             };
+            const isNoResponse = (v) => !v || (typeof v === 'string' && v.trim().toLowerCase() === 'no response');
             const parseQueryLines = (str) => {
-              if (!str || typeof str !== 'string') return [];
-              return str.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+              if (!str || typeof str !== 'string' || isNoResponse(str)) return [];
+              return str.split(/\r?\n/).map(s => s.trim()).filter(line => line && !isNoResponse(line))
                 .map(line => {
                   const colonIdx = line.indexOf(':');
                   const eqIdx = line.indexOf('=');
@@ -101,6 +102,7 @@ jobs:
                     key = line.slice(0, eqIdx).trim();
                     value = line.slice(eqIdx + 1).trim();
                   } else return null;
+                  if (isNoResponse(key) || isNoResponse(value)) return null;
                   return key ? { key, value: value || '' } : null;
                 }).filter(Boolean);
             };
@@ -112,7 +114,8 @@ jobs:
               core.setFailed(`Invalid http_method: ${http_method}. Must be GET or POST.`);
               return;
             }
-            const with_proxy = get('With proxy').toLowerCase() !== 'false';
+            const withProxyRaw = get('With proxy');
+            const with_proxy = (withProxyRaw && withProxyRaw.toLowerCase() === 'false') ? false : true;
             const request_url = get('Request URL');
             const tracking_url = get('Tracking URL');
             const request_queries = parseQueryLines(get('Request queries'));
@@ -128,8 +131,8 @@ jobs:
               request: { url: request_url, queries: request_queries },
               tracking: { url: tracking_url, queries: tracking_queries },
             };
-            if (user_agent) vendor.user_agent = user_agent;
-            if (content_type) vendor.content_type = content_type;
+            if (!isNoResponse(user_agent)) vendor.user_agent = user_agent;
+            if (!isNoResponse(content_type)) vendor.content_type = content_type;
             core.setOutput('vendor_json', JSON.stringify(vendor, null, 2));
 
       - name: Create branch
