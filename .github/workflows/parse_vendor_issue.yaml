@@ -1,0 +1,157 @@
+name: Parse vendor issue
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number (leave empty to use triggering issue)"
+        required: false
+  issues:
+    types:
+      - opened
+      - edited
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    outputs:
+      vendor_json: ${{ steps.build.outputs.vendor_json }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get issue body
+        id: get_issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let body = '';
+            let title = '';
+            let number = '';
+            if (context.payload.issue) {
+              body = context.payload.issue.body || '';
+              title = context.payload.issue.title || '';
+              number = String(context.payload.issue.number);
+            } else {
+              const issueNumber = context.payload.inputs?.issue_number;
+              if (!issueNumber) {
+                core.setFailed('No issue number available (not triggered by issue and none provided for workflow_dispatch).');
+                return;
+              }
+              const owner = context.repo.owner;
+              const repo = context.repo.repo;
+              const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: Number(issueNumber) });
+              body = issue.body || '';
+              title = issue.title || '';
+              number = String(issue.number);
+            }
+            core.setOutput('body', body);
+            core.setOutput('title', title);
+            core.setOutput('number', number);
+
+      - name: Parse body and build vendor JSON
+        id: build
+        env:
+          ISSUE_BODY: ${{ steps.get_issue.outputs.body }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const bodyContent = process.env.ISSUE_BODY || '';
+            const parseBody = (text) => {
+              const sections = {};
+              const lines = (text || '').split(/\r?\n/);
+              let currentLabel = null;
+              let currentLines = [];
+              for (const line of lines) {
+                const match = line.match(/^###\s+(.+)$/);
+                if (match) {
+                  if (currentLabel !== null) {
+                    sections[currentLabel] = currentLines.join('\n').trim();
+                  }
+                  currentLabel = match[1].trim();
+                  currentLines = [];
+                } else if (currentLabel !== null) {
+                  currentLines.push(line);
+                }
+              }
+              if (currentLabel !== null) {
+                sections[currentLabel] = currentLines.join('\n').trim();
+              }
+              return sections;
+            };
+            const parseQueryLines = (str) => {
+              if (!str || typeof str !== 'string') return [];
+              return str.split(/\r?\n/)
+                .map(s => s.trim())
+                .filter(Boolean)
+                .map(line => {
+                  const colonIdx = line.indexOf(':');
+                  const eqIdx = line.indexOf('=');
+                  let key, value;
+                  if (colonIdx >= 0 && (eqIdx < 0 || colonIdx <= eqIdx)) {
+                    key = line.slice(0, colonIdx).trim();
+                    value = line.slice(colonIdx + 1).trim();
+                  } else if (eqIdx >= 0) {
+                    key = line.slice(0, eqIdx).trim();
+                    value = line.slice(eqIdx + 1).trim();
+                  } else {
+                    return null;
+                  }
+                  return key ? { key, value: value || '' } : null;
+                })
+                .filter(Boolean);
+            };
+            const raw = parseBody(bodyContent);
+            const get = (label) => (raw[label] || '').trim();
+            const name = get('Vendor name');
+            const http_method = (get('HTTP method') || 'GET').toUpperCase();
+            if (http_method !== 'GET' && http_method !== 'POST') {
+              core.setFailed(`Invalid http_method: ${http_method}. Must be GET or POST.`);
+              return;
+            }
+            const withProxyRaw = get('With proxy').toLowerCase();
+            const with_proxy = withProxyRaw === 'false' ? false : true;
+            const request_url = get('Request URL');
+            const tracking_url = get('Tracking URL');
+            const request_queries = parseQueryLines(get('Request queries'));
+            const tracking_queries = parseQueryLines(get('Tracking queries'));
+            const user_agent = get('User-Agent');
+            const content_type = get('Content-Type');
+            if (!name) {
+              core.setFailed('Missing required field: Vendor name');
+              return;
+            }
+            if (!request_url) {
+              core.setFailed('Missing required field: Request URL');
+              return;
+            }
+            if (!tracking_url) {
+              core.setFailed('Missing required field: Tracking URL');
+              return;
+            }
+            const vendor = {
+              name,
+              with_proxy,
+              http_method,
+              request: { url: request_url, queries: request_queries },
+              tracking: { url: tracking_url, queries: tracking_queries },
+            };
+            if (user_agent) vendor.user_agent = user_agent;
+            if (content_type) vendor.content_type = content_type;
+            const vendorJson = JSON.stringify(vendor, null, 2);
+            core.setOutput('vendor_json', vendorJson);
+            const fs = require('fs');
+            const path = require('path');
+            const outPath = path.join(process.env.GITHUB_WORKSPACE || '.', 'vendor.json');
+            fs.writeFileSync(outPath, vendorJson, 'utf8');
+            core.summary.addRaw(`\n\`\`\`json\n${vendorJson}\n\`\`\``).write();
+
+      - name: Upload vendor.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor-json
+          path: vendor.json
