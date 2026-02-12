@@ -1,6 +1,6 @@
 # Gemini CLI (run-gemini-cli)
 .gemini/
+gemini-artifacts/
 
 # Workflow temp
-.vendor-prompt.txt
 vendor-prompt-sent.txt
