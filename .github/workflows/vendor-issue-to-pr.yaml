@@ -152,8 +152,9 @@ jobs:
           script: |
             const fs = require('fs');
             const path = require('path');
-            const promptPath = path.join(process.env.GITHUB_WORKSPACE || '.', '.github/prompts/vendor-onboard-prompt.md');
-            const outPath = path.join(process.env.GITHUB_WORKSPACE || '.', '.vendor-prompt.txt');
+            const ws = process.env.GITHUB_WORKSPACE || process.cwd();
+            const promptPath = path.join(ws, '.github/prompts/vendor-onboard-prompt.md');
+            const outPath = path.join(ws, 'vendor-prompt-sent.txt');
             if (!fs.existsSync(promptPath)) {
               core.setFailed('Predefined prompt not found: .github/prompts/vendor-onboard-prompt.md');
               return;
@@ -168,14 +169,14 @@ jobs:
         id: prompt_output
         run: |
           echo "prompt<<EOF" >> "$GITHUB_OUTPUT"
-          cat .vendor-prompt.txt >> "$GITHUB_OUTPUT"
+          cat vendor-prompt-sent.txt >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Upload prompt to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: vendor-prompt
-          path: ${{ github.workspace }}/.vendor-prompt.txt
+          path: vendor-prompt-sent.txt
 
       - name: Run Gemini CLI
         id: run_gemini
