@@ -1,10 +1,10 @@
 # POC: vendor list for Parse vendor issue + Aider workflow. Add new entries via the vendor onboarding issue form.
 vendors:
-  - name: example
+  - name: test
     with_proxy: true
     http_method: GET
     request:
-      url: "https://api.example.com/reco"
+      url: "https://test"
       queries:
         - key: app_code
           value: "{subid}"
