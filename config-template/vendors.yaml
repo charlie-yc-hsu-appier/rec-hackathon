@@ -11,3 +11,18 @@ vendors:
     tracking:
       url: "{product_url}"
       queries: []
+  - name: abc
+    with_proxy: true
+    http_method: GET
+    request:
+      url: "https://test"
+      queries:
+        - key: app_code
+          value: "{sub_id}"
+        - key: device_id
+          value: "{user_id_lower}"
+    tracking:
+      url: "{product_url}"
+      queries:
+        - key: subparam
+          value: "{click_id_base64}"
