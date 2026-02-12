@@ -1,0 +1,55 @@
+replicaCount: 1
+
+ingress:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+disruptionBudget:
+  enabled: false
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0%
+    maxSurge: 10%
+
+podAnnotations:
+  cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+  prometheus/scrape: "true"
+  prometheus/app: rec-vendor-api
+
+resources:
+  limits:
+    memory: 64Mi
+  requests:
+    cpu: 300m
+    memory: 32Mi
+
+# TODO: to be merged with portConfig when gin server is retired
+service:
+  type: ClusterIP
+  port: 80
+
+portConfig:
+  ginPort: 8080
+  grpcPort: 10000
+  gatewayPort: 10001
+
+
+nodeSelector:
+  cloud.google.com/compute-class: shared
+
+tolerations:
+  - key: appier/preemptible
+    operator: Exists
+
+nginx:
+  image: asia-docker.pkg.dev/appier-docker/docker-ai-rec-asia/nginx-lua-prometheus:v1.0.0
+  resources:
+    limits:
+      memory: 64Mi
+    requests:
+      cpu: 30m
+      memory: 32Mi
